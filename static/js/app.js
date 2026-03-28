@@ -1,34 +1,39 @@
-// app.js
+// app.js — Camera Inspector
 
-let state = "disconnected"; // disconnected | connecting | connected
+let state = "disconnected";
 let cameraData = null;
 let pollTimer = null;
 
 // --- DOM refs ---
-const $disconnected = document.getElementById("disconnected");
-const $connected = document.getElementById("connected");
-const $statusIcon = document.getElementById("status-icon");
-const $statusText = document.getElementById("status-text");
+const $title = document.getElementById("camera-title");
+const $statusMessage = document.getElementById("status-message");
+const $fields = document.getElementById("fields-container");
 const $toast = document.getElementById("toast");
+const $copyReport = document.getElementById("copy-report");
+const $saveUser = document.getElementById("save-user");
 
-// Overview
-const $model = document.getElementById("val-model");
-const $serial = document.getElementById("val-serial");
-const $battery = document.getElementById("val-battery");
-const $batteryBar = document.getElementById("battery-bar");
+// Battery
+const $batteryDisplay = document.getElementById("battery-display");
+const $batteryText = document.getElementById("val-battery");
+const $batSegs = [
+  document.getElementById("bat-seg-1"),
+  document.getElementById("bat-seg-2"),
+  document.getElementById("bat-seg-3"),
+  document.getElementById("bat-seg-4"),
+];
+
+// Fields
 const $firmware = document.getElementById("val-firmware");
-
-// Shutter
-const $shutterCount = document.getElementById("val-shutter-count");
-const $wearSection = document.getElementById("wear-section");
-const $wearText = document.getElementById("val-wear-text");
+const $shutter = document.getElementById("val-shutter");
+const $wearRow = document.getElementById("wear-row");
 const $wearBar = document.getElementById("wear-bar");
-
-// User
+const $wearText = document.getElementById("val-wear-text");
+const $serial = document.getElementById("val-serial");
+const $lens = document.getElementById("val-lens");
+const $datetime = document.getElementById("val-datetime");
 const $owner = document.getElementById("input-owner");
 const $artist = document.getElementById("input-artist");
 const $copyright = document.getElementById("input-copyright");
-const $saveUser = document.getElementById("save-user");
 
 // --- API ---
 async function api(path, options = {}) {
@@ -38,19 +43,38 @@ async function api(path, options = {}) {
   return data;
 }
 
-// --- State transitions ---
+// --- State ---
 function setState(newState) {
   state = newState;
-  $disconnected.hidden = state === "connected";
-  $connected.hidden = state !== "connected";
-
   if (state === "disconnected") {
-    $statusIcon.className = "spinner";
-    $statusText.textContent = "Checking camera...";
+    $title.textContent = "Camera Not Connected";
+    $statusMessage.hidden = false;
+    $fields.hidden = true;
+    $batteryDisplay.hidden = true;
+    $copyReport.hidden = true;
+    $saveUser.hidden = true;
+    clearFields();
     startPolling();
   } else if (state === "connected") {
+    $statusMessage.hidden = true;
+    $fields.hidden = false;
+    $copyReport.hidden = false;
+    $saveUser.hidden = false;
     stopPolling();
   }
+}
+
+function clearFields() {
+  $firmware.textContent = "";
+  $shutter.textContent = "";
+  $serial.textContent = "";
+  $lens.textContent = "";
+  $datetime.textContent = "";
+  $owner.value = "";
+  $artist.value = "";
+  $copyright.value = "";
+  $wearRow.hidden = true;
+  $batSegs.forEach(s => { s.className = "battery-seg"; });
 }
 
 function startPolling() {
@@ -73,17 +97,15 @@ async function checkCamera() {
       await loadCameraData();
     }
   } catch {
-    // Still disconnected, keep polling
+    // keep polling
   }
 }
 
 async function loadCameraData() {
   try {
-    const isReconnect = state === "connected";
+    const wasConnected = state === "connected";
     cameraData = await api("/api/camera");
-    renderOverview();
-    renderShutter();
-    if (!isReconnect) renderUser(); // Don't overwrite in-progress user edits on reconnect
+    renderData(wasConnected);
     setState("connected");
   } catch (e) {
     showToast("Failed to read camera: " + e.message);
@@ -91,61 +113,56 @@ async function loadCameraData() {
   }
 }
 
-// --- Render functions ---
-function renderOverview() {
+// --- Render ---
+function renderData(skipUserFields) {
   const o = cameraData.overview;
-  $model.textContent = o.model;
-  $serial.textContent = o.serial || "—";
-  $firmware.textContent = o.firmware || "—";
-  $battery.textContent = o.battery;
-
-  // Battery bar
-  const pct = parseInt(o.battery);
-  if (!isNaN(pct)) {
-    $batteryBar.style.width = pct + "%";
-    $batteryBar.className = "progress-bar " + (pct >= 50 ? "green" : pct >= 20 ? "yellow" : "red");
-  } else {
-    $batteryBar.style.width = "0%";
-  }
-}
-
-function renderShutter() {
   const s = cameraData.shutter;
-  $shutterCount.textContent = s.count !== null ? s.count.toLocaleString() : "—";
+  const u = cameraData.user;
 
+  $title.textContent = o.model || "Unknown Camera";
+  $firmware.textContent = o.firmware || "";
+  $shutter.textContent = s.count !== null ? s.count.toLocaleString() : "";
+  $serial.textContent = o.serial || "";
+  $lens.textContent = o.lens || "";
+  $datetime.textContent = o.datetime || "";
+  // copyright rendered in user fields section below
+
+  // Wear bar
   if (s.ratedLifespan && s.wearPercent !== null) {
-    $wearSection.hidden = false;
-    $wearText.textContent = `Shutter wear is ${s.wearPercent}% of its rated lifespan of ${s.ratedLifespan.toLocaleString()} actuations.`;
+    $wearRow.hidden = false;
     $wearBar.style.width = Math.min(s.wearPercent, 100) + "%";
     $wearBar.className = "progress-bar " + (s.wearPercent < 33 ? "green" : s.wearPercent < 66 ? "yellow" : "red");
+    $wearText.textContent = `${s.wearPercent}% of ${s.ratedLifespan.toLocaleString()}`;
   } else {
-    $wearSection.hidden = true;
+    $wearRow.hidden = true;
+  }
+
+  // Battery — 4 segments
+  const pct = parseInt(o.battery);
+  if (!isNaN(pct)) {
+    $batteryDisplay.hidden = false;
+    $batteryText.textContent = "Battery Level : " + o.battery;
+    const filledCount = pct >= 88 ? 4 : pct >= 63 ? 3 : pct >= 38 ? 2 : pct >= 10 ? 1 : 0;
+    const color = pct >= 50 ? "green" : pct >= 20 ? "yellow" : "red";
+    $batSegs.forEach((seg, i) => {
+      seg.className = "battery-seg" + (i < filledCount ? ` filled ${color}` : "");
+    });
+  } else {
+    $batteryDisplay.hidden = true;
+  }
+
+  // User fields — don't overwrite if editing
+  if (!skipUserFields) {
+    $owner.value = u.owner || "";
+    $artist.value = u.artist || "";
+    $copyright.value = u.copyright || "";
   }
 }
-
-function renderUser() {
-  const u = cameraData.user;
-  $owner.value = u.owner;
-  $artist.value = u.artist;
-  $copyright.value = u.copyright;
-}
-
-// --- Tabs ---
-document.querySelectorAll(".tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
-    tab.classList.add("active");
-    document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
-  });
-});
 
 // --- Save user fields ---
 $saveUser.addEventListener("click", async () => {
-  if (!confirm("Write these values to camera?")) return;
-
+  if (!confirm("Write Owner, Artist and Copyright to camera?")) return;
   $saveUser.disabled = true;
-  $saveUser.textContent = "Saving...";
   try {
     const result = await api("/api/camera/user", {
       method: "POST",
@@ -157,28 +174,31 @@ $saveUser.addEventListener("click", async () => {
       }),
     });
     cameraData.user = result;
-    renderUser();
     showToast("Saved to camera");
   } catch (e) {
     showToast("Failed to save: " + e.message);
   } finally {
     $saveUser.disabled = false;
-    $saveUser.textContent = "Save to Camera";
   }
 });
 
 // --- Copy report ---
-document.getElementById("copy-report").addEventListener("click", async () => {
+$copyReport.addEventListener("click", async () => {
   if (!cameraData) return;
   const o = cameraData.overview;
   const s = cameraData.shutter;
-  let report = `${o.model}\nSerial: ${o.serial}\nFirmware: ${o.firmware}\nBattery: ${o.battery}`;
-  if (s.count !== null) {
-    report += `\nShutter Count: ${s.count.toLocaleString()} actuations`;
-    if (s.wearPercent !== null && s.ratedLifespan) {
-      report += `\nShutter Wear: ${s.wearPercent}% of ${s.ratedLifespan.toLocaleString()} rated lifespan`;
-    }
-  }
+  const u = cameraData.user;
+  let report = o.model;
+  report += `\nFirmware: ${o.firmware}`;
+  if (s.count !== null) report += `\nShutter Count: ${s.count.toLocaleString()} actuations`;
+  if (s.wearPercent !== null && s.ratedLifespan) report += `\nShutter Wear: ${s.wearPercent}% of ${s.ratedLifespan.toLocaleString()} rated lifespan`;
+  report += `\nSerial: ${o.serial}`;
+  if (o.lens) report += `\nLens: ${o.lens}`;
+  report += `\nBattery: ${o.battery}`;
+  if (o.datetime) report += `\nDate/Time: ${o.datetime}`;
+  if (u.owner) report += `\nOwner: ${u.owner}`;
+  if (u.artist) report += `\nArtist: ${u.artist}`;
+  if (u.copyright) report += `\nCopyright: ${u.copyright}`;
   try {
     await navigator.clipboard.writeText(report);
     showToast("Report copied to clipboard");

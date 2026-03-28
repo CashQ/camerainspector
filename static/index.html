@@ -3,96 +3,98 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ShutterCheck</title>
+    <title>Camera Inspector</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <div id="app">
-        <!-- Disconnected state -->
-        <div id="disconnected" class="card">
+        <div class="card">
             <div class="app-header">
-                <h1>ShutterCheck</h1>
-                <p class="subtitle">Canon EOS Camera Inspector</p>
-            </div>
-            <div class="status-message">
-                <div id="status-icon" class="spinner"></div>
-                <p id="status-text">Checking camera...</p>
-            </div>
-        </div>
-
-        <!-- Connected state -->
-        <div id="connected" class="card" hidden>
-            <div class="app-header">
-                <h1>ShutterCheck</h1>
-                <button id="copy-report" class="btn-secondary" title="Copy report to clipboard">Copy Report</button>
+                <h1 id="camera-title">Camera Not Connected</h1>
+                <button id="copy-report" class="btn-secondary" title="Copy report to clipboard" hidden>Copy Report</button>
             </div>
 
-            <!-- Tabs -->
-            <div class="tabs">
-                <button class="tab active" data-tab="overview">Overview</button>
-                <button class="tab" data-tab="shutter">Shutter</button>
-                <button class="tab" data-tab="user">User</button>
+            <div id="status-message" class="status-message">
+                <div class="spinner"></div>
+                <p>Searching for camera...</p>
             </div>
 
-            <!-- Overview Tab -->
-            <div id="tab-overview" class="tab-content active">
-                <div class="field">
-                    <span class="field-label">Model</span>
-                    <span class="field-value" id="val-model">—</span>
-                </div>
-                <div class="field">
-                    <span class="field-label">Serial Number</span>
-                    <span class="field-value" id="val-serial">—</span>
-                </div>
-                <div class="field">
-                    <span class="field-label">Battery Level</span>
-                    <div class="field-value-row">
-                        <span id="val-battery">—</span>
-                        <div class="progress-bar-container">
-                            <div id="battery-bar" class="progress-bar"></div>
+            <div id="fields-container" class="fields-container" hidden>
+                <!-- Top section: fields + battery on right -->
+                <div class="fields-with-battery">
+                    <div class="fields-left">
+                        <div class="field-row">
+                            <span class="field-label">Firmware Version :</span>
+                            <span class="field-value" id="val-firmware"></span>
+                        </div>
+                        <div class="field-row">
+                            <span class="field-label">Shutter Counter :</span>
+                            <span class="field-value field-highlight" id="val-shutter"></span>
+                        </div>
+                        <div class="field-row" id="wear-row" hidden>
+                            <span class="field-label"></span>
+                            <div class="wear-container">
+                                <div class="progress-bar-container">
+                                    <div id="wear-bar" class="progress-bar"></div>
+                                </div>
+                                <span class="wear-text" id="val-wear-text"></span>
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <span class="field-label">Serial Number :</span>
+                            <span class="field-value" id="val-serial"></span>
                         </div>
                     </div>
+                    <div id="battery-display" class="battery-right" hidden>
+                        <div class="battery-icon-large">
+                            <div class="battery-segments">
+                                <div class="battery-seg" id="bat-seg-1"></div>
+                                <div class="battery-seg" id="bat-seg-2"></div>
+                                <div class="battery-seg" id="bat-seg-3"></div>
+                                <div class="battery-seg" id="bat-seg-4"></div>
+                            </div>
+                        </div>
+                        <span class="battery-text" id="val-battery"></span>
+                    </div>
                 </div>
-                <div class="field">
-                    <span class="field-label">Firmware Version</span>
-                    <span class="field-value" id="val-firmware">—</span>
-                </div>
-            </div>
 
-            <!-- Shutter Tab -->
-            <div id="tab-shutter" class="tab-content">
-                <div class="shutter-count-display">
-                    <span class="shutter-label">Shutter Count</span>
-                    <span class="shutter-value" id="val-shutter-count">—</span>
-                    <span class="shutter-unit">actuations</span>
+                <div class="field-row full">
+                    <span class="field-label">Lens Name :</span>
+                    <span class="field-value" id="val-lens"></span>
                 </div>
-                <div class="field" id="wear-section" hidden>
-                    <p class="wear-text" id="val-wear-text"></p>
-                    <div class="progress-bar-container large">
-                        <div id="wear-bar" class="progress-bar"></div>
+                <div class="divider"></div>
+                <div class="field-row full">
+                    <span class="field-label">System Date/Time :</span>
+                    <span class="field-value" id="val-datetime"></span>
+                </div>
+                <div class="divider"></div>
+                <div class="user-block">
+                    <div class="user-block-header">
+                        <span class="user-block-title">User Settings</span>
+                    </div>
+                    <div class="user-block-body">
+                        <div class="user-fields">
+                            <div class="field-row full">
+                                <span class="field-label">Owner Name :</span>
+                                <input type="text" id="input-owner" class="field-input" maxlength="31" placeholder="">
+                            </div>
+                            <div class="field-row full">
+                                <span class="field-label">Artist :</span>
+                                <input type="text" id="input-artist" class="field-input" maxlength="63" placeholder="">
+                            </div>
+                            <div class="field-row full">
+                                <span class="field-label">Copyright :</span>
+                                <input type="text" id="input-copyright" class="field-input" maxlength="63" placeholder="">
+                            </div>
+                        </div>
+                        <button id="save-user" class="btn-save" title="Save to camera" hidden>
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1V4.414a1 1 0 00-.293-.707l-2.414-2.414A1 1 0 0011.586 1H2zm2 3h5v2H4V4zm8 10H4V9h8v5z"/></svg>
+                        </button>
                     </div>
                 </div>
             </div>
-
-            <!-- User Tab -->
-            <div id="tab-user" class="tab-content">
-                <div class="field-input">
-                    <label for="input-owner">Owner</label>
-                    <input type="text" id="input-owner" maxlength="31" placeholder="Up to 31 ASCII characters">
-                </div>
-                <div class="field-input">
-                    <label for="input-artist">Artist</label>
-                    <input type="text" id="input-artist" maxlength="63" placeholder="Up to 63 ASCII characters">
-                </div>
-                <div class="field-input">
-                    <label for="input-copyright">Copyright</label>
-                    <input type="text" id="input-copyright" maxlength="63" placeholder="Up to 63 ASCII characters">
-                </div>
-                <button id="save-user" class="btn-primary">Save to Camera</button>
-            </div>
         </div>
 
-        <!-- Toast -->
         <div id="toast" class="toast" hidden></div>
     </div>
 

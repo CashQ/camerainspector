@@ -1,26 +1,44 @@
-# server.py
+# server.py — Camera Inspector backend
+# Reads Canon EOS camera data over USB via libgphoto2
+
+import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
+import traceback
 import webbrowser
+from datetime import datetime as dt, timezone
 
 import gphoto2 as gp
 from flask import Flask, jsonify, request, send_from_directory
 
-from camera_db import get_rated_lifespan, normalize_model_name
+from camera_db import get_rated_lifespan
+
+# --- Logging ---
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("camerainspector")
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 
-# --- ptpcamerad management ---
+# --- ptpcamerad management (macOS only) ---
 
 def kill_ptpcamerad():
-    """Kill macOS ptpcamerad to release USB camera. Best-effort."""
+    """Kill macOS ptpcamerad to release USB camera. Best-effort, no-op on non-macOS."""
+    if sys.platform != "darwin":
+        return
     try:
-        subprocess.run(["pkill", "-9", "ptpcamerad"], capture_output=True)
-    except Exception:
-        pass
+        result = subprocess.run(["pkill", "-9", "ptpcamerad"], capture_output=True, text=True)
+        if result.returncode == 0:
+            log.info("Killed ptpcamerad")
+    except Exception as e:
+        log.debug("pkill ptpcamerad: %s", e)
     try:
         uid = os.getuid()
         subprocess.run(
@@ -31,34 +49,39 @@ def kill_ptpcamerad():
         pass
 
 
-# --- gphoto2 camera access ---
+# --- gphoto2 helpers ---
 
 def get_camera():
-    """Detect and return a gphoto2 camera object, or None. Re-kills ptpcamerad if needed."""
+    """Detect and return a gphoto2 camera, or None."""
     kill_ptpcamerad()
     try:
         camera = gp.Camera()
         camera.init()
+        log.info("Camera connected")
         return camera
-    except gp.GPhoto2Error:
+    except gp.GPhoto2Error as e:
+        log.warning("Camera init failed: %s", e)
         return None
 
 
-def read_config_value(camera, path):
-    """Read a single config value from camera. Returns string or None."""
+def read_config(camera, name):
+    """Read a single config value by short name. Returns string or None."""
     try:
-        config = camera.get_single_config(path)
-        return config.get_value()
-    except gp.GPhoto2Error:
+        widget = camera.get_single_config(name)
+        value = widget.get_value()
+        log.debug("Config '%s' = '%s'", name, value)
+        return value
+    except gp.GPhoto2Error as e:
+        log.debug("Config '%s' unavailable: %s", name, e)
         return None
 
 
 def read_summary(camera):
-    """Parse camera summary for model, serial, firmware."""
+    """Parse camera summary text for model, serial, firmware."""
     info = {}
     try:
-        summary = camera.get_summary()
-        for line in str(summary).split("\n"):
+        raw = str(camera.get_summary())
+        for line in raw.split("\n"):
             line = line.strip()
             if line.startswith("Model:"):
                 info["model"] = line.split(":", 1)[1].strip()
@@ -66,9 +89,47 @@ def read_summary(camera):
                 info["serial"] = line.split(":", 1)[1].strip()
             elif line.startswith("Version:"):
                 info["firmware"] = line.split(":", 1)[1].strip()
-    except gp.GPhoto2Error:
-        pass
+        log.info("Summary: %s", info)
+    except gp.GPhoto2Error as e:
+        log.error("get_summary failed: %s", e)
     return info
+
+
+def resolve_serial(camera, summary):
+    """Get real camera serial number. Tries EOS config first, falls back to PTP summary."""
+    return (
+        read_config(camera, "eosserialnumber")
+        or read_config(camera, "serialnumber")
+        or summary.get("serial", "")
+    )
+
+
+def parse_shutter(camera, model):
+    """Read shutter count and compute wear stats."""
+    raw = read_config(camera, "shuttercounter")
+    count = None
+    if raw:
+        try:
+            count = int(raw)
+        except ValueError:
+            log.warning("Could not parse shutter count: '%s'", raw)
+    rated = get_rated_lifespan(model)
+    wear = round(count / rated * 100, 1) if count and rated else None
+    return {"count": count, "ratedLifespan": rated, "wearPercent": wear}
+
+
+def format_datetime(camera):
+    """Read camera datetime (unix timestamp) and format it."""
+    raw = read_config(camera, "datetimeutc") or read_config(camera, "datetime")
+    if not raw:
+        return ""
+    try:
+        ts = int(raw)
+        return dt.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime(
+            "%A, %B %d, %Y, %I:%M:%S %p"
+        )
+    except (ValueError, OSError):
+        return raw
 
 
 def camera_request(fn):
@@ -77,9 +138,12 @@ def camera_request(fn):
     if camera is None:
         return jsonify({"connected": False, "error": "No camera found"}), 404
     try:
-        result = fn(camera)
-        return jsonify(result)
+        return jsonify(fn(camera))
     except gp.GPhoto2Error as e:
+        log.error("gphoto2 error: %s", e)
+        return jsonify({"connected": False, "error": str(e)}), 500
+    except Exception as e:
+        log.error("Unexpected error: %s\n%s", e, traceback.format_exc())
         return jsonify({"connected": False, "error": str(e)}), 500
     finally:
         try:
@@ -115,34 +179,24 @@ def api_camera_all():
     def read_all(camera):
         summary = read_summary(camera)
         model = summary.get("model", "Unknown")
-
-        battery = read_config_value(camera, "/main/status/batterylevel")
-        shutter = read_config_value(camera, "/main/status/shuttercounter")
-        owner = read_config_value(camera, "/main/settings/ownername")
-        artist = read_config_value(camera, "/main/settings/artist")
-        copyright_ = read_config_value(camera, "/main/settings/copyright")
-
-        shutter_count = int(shutter) if shutter and shutter.isdigit() else None
-        rated = get_rated_lifespan(model)
-        wear = round(shutter_count / rated * 100, 1) if shutter_count and rated else None
+        serial = resolve_serial(camera, summary)
+        shutter = parse_shutter(camera, model)
 
         return {
             "connected": True,
             "overview": {
                 "model": model,
-                "serial": summary.get("serial", ""),
+                "serial": serial,
                 "firmware": summary.get("firmware", ""),
-                "battery": battery or "Unknown",
+                "battery": read_config(camera, "batterylevel") or "Unknown",
+                "lens": read_config(camera, "lensname") or "No lens attached",
+                "datetime": format_datetime(camera),
             },
-            "shutter": {
-                "count": shutter_count,
-                "ratedLifespan": rated,
-                "wearPercent": wear,
-            },
+            "shutter": shutter,
             "user": {
-                "owner": owner or "",
-                "artist": artist or "",
-                "copyright": copyright_ or "",
+                "owner": read_config(camera, "ownername") or "",
+                "artist": read_config(camera, "artist") or "",
+                "copyright": read_config(camera, "copyright") or "",
             },
         }
     return camera_request(read_all)
@@ -152,12 +206,11 @@ def api_camera_all():
 def api_camera_overview():
     def read_overview(camera):
         summary = read_summary(camera)
-        battery = read_config_value(camera, "/main/status/batterylevel")
         return {
             "model": summary.get("model", "Unknown"),
-            "serial": summary.get("serial", ""),
+            "serial": resolve_serial(camera, summary),
             "firmware": summary.get("firmware", ""),
-            "battery": battery or "Unknown",
+            "battery": read_config(camera, "batterylevel") or "Unknown",
         }
     return camera_request(read_overview)
 
@@ -166,29 +219,17 @@ def api_camera_overview():
 def api_camera_shutter():
     def read_shutter(camera):
         summary = read_summary(camera)
-        model = summary.get("model", "Unknown")
-        shutter = read_config_value(camera, "/main/status/shuttercounter")
-        shutter_count = int(shutter) if shutter and shutter.isdigit() else None
-        rated = get_rated_lifespan(model)
-        wear = round(shutter_count / rated * 100, 1) if shutter_count and rated else None
-        return {
-            "count": shutter_count,
-            "ratedLifespan": rated,
-            "wearPercent": wear,
-        }
+        return parse_shutter(camera, summary.get("model", "Unknown"))
     return camera_request(read_shutter)
 
 
 @app.route("/api/camera/user", methods=["GET"])
 def api_camera_user_get():
     def read_user(camera):
-        owner = read_config_value(camera, "/main/settings/ownername")
-        artist = read_config_value(camera, "/main/settings/artist")
-        copyright_ = read_config_value(camera, "/main/settings/copyright")
         return {
-            "owner": owner or "",
-            "artist": artist or "",
-            "copyright": copyright_ or "",
+            "owner": read_config(camera, "ownername") or "",
+            "artist": read_config(camera, "artist") or "",
+            "copyright": read_config(camera, "copyright") or "",
         }
     return camera_request(read_user)
 
@@ -200,28 +241,20 @@ def api_camera_user_post():
         return jsonify({"error": "Request body must be JSON"}), 400
 
     def write_user(camera):
-        fields = [
-            ("/main/settings/ownername", "owner"),
-            ("/main/settings/artist", "artist"),
-            ("/main/settings/copyright", "copyright"),
-        ]
-        for config_key, json_key in fields:
+        for config_key, json_key in [("ownername", "owner"), ("artist", "artist"), ("copyright", "copyright")]:
             if json_key in data:
                 try:
-                    config = camera.get_single_config(config_key)
-                    config.set_value(str(data[json_key]))
-                    camera.set_single_config(config_key, config)
-                except gp.GPhoto2Error:
-                    pass
+                    widget = camera.get_single_config(config_key)
+                    widget.set_value(str(data[json_key]))
+                    camera.set_single_config(config_key, widget)
+                    log.info("Wrote '%s' = '%s'", config_key, data[json_key])
+                except gp.GPhoto2Error as e:
+                    log.error("Write '%s' failed: %s", config_key, e)
 
-        # Read back to confirm what was stored
-        owner = read_config_value(camera, "/main/settings/ownername")
-        artist = read_config_value(camera, "/main/settings/artist")
-        copyright_ = read_config_value(camera, "/main/settings/copyright")
         return {
-            "owner": owner or "",
-            "artist": artist or "",
-            "copyright": copyright_ or "",
+            "owner": read_config(camera, "ownername") or "",
+            "artist": read_config(camera, "artist") or "",
+            "copyright": read_config(camera, "copyright") or "",
         }
     return camera_request(write_user)
 
@@ -229,18 +262,32 @@ def api_camera_user_post():
 # --- Graceful shutdown ---
 
 def shutdown_handler(signum, frame):
-    print("\nShutting down...")
+    log.info("Shutting down...")
     sys.exit(0)
 
 
 # --- Main ---
 
 if __name__ == "__main__":
+    # Auto-escalate to root if not already (needed for USB device access on macOS)
+    if sys.platform == "darwin" and os.getuid() != 0:
+        log.info("Requesting root access for USB camera communication...")
+        os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     kill_ptpcamerad()
-    print("Canon ShutterCheck server starting...")
-    print("Opening http://localhost:5000")
-    webbrowser.open("http://localhost:5000")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+
+    def find_free_port(start=5050, end=5100):
+        for port in range(start, end):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(("127.0.0.1", port)) != 0:
+                    return port
+        log.error("No free port found in range %d-%d", start, end)
+        sys.exit(1)
+
+    port = find_free_port()
+    log.info("Camera Inspector starting on http://localhost:%d", port)
+    webbrowser.open(f"http://localhost:{port}")
+    app.run(host="127.0.0.1", port=port, debug=False)

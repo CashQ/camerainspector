@@ -53,11 +53,14 @@ def test_camera_all_with_data(mock_get_camera, client):
 
     def mock_get_single_config(key):
         values = {
-            "/main/status/batterylevel": "100%",
-            "/main/status/shuttercounter": "8360",
-            "/main/settings/ownername": "Alex",
-            "/main/settings/artist": "Alex V",
-            "/main/settings/copyright": "(c) 2026",
+            "batterylevel": "100%",
+            "shuttercounter": "8360",
+            "ownername": "Alex",
+            "artist": "Alex V",
+            "copyright": "(c) 2026",
+            "eosserialnumber": "1130704556",
+            "lensname": "EF 50mm f/1.4",
+            "datetimeutc": "1774724414",
         }
         mock_config = MagicMock()
         mock_config.get_value.return_value = values.get(key, "")
@@ -70,7 +73,10 @@ def test_camera_all_with_data(mock_get_camera, client):
     data = json.loads(resp.data)
     assert data["connected"] is True
     assert data["overview"]["model"] == "Canon EOS 5D Mark II"
+    assert data["overview"]["serial"] == "1130704556"
     assert data["overview"]["battery"] == "100%"
+    assert data["overview"]["lens"] == "EF 50mm f/1.4"
+    assert data["overview"]["datetime"] != ""
     assert data["shutter"]["count"] == 8360
     assert data["shutter"]["ratedLifespan"] == 150000
     assert data["shutter"]["wearPercent"] == 5.6
