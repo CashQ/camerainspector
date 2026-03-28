@@ -31,8 +31,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run (auto-requests sudo for USB access)
-.venv/bin/python server.py
+# Run (sudo required for USB access)
+sudo .venv/bin/python -u server.py
 ```
 
 Connect your camera, and it opens automatically in your browser.

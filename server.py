@@ -269,10 +269,11 @@ def shutdown_handler(signum, frame):
 # --- Main ---
 
 if __name__ == "__main__":
-    # Auto-escalate to root if not already (needed for USB device access on macOS)
+    # Check root access (needed for USB device access on macOS)
     if sys.platform == "darwin" and os.getuid() != 0:
-        log.info("Requesting root access for USB camera communication...")
-        os.execvp("sudo", ["sudo", sys.executable] + sys.argv)
+        print("\n  Camera Inspector requires sudo for USB camera access.")
+        print("  Run with:  sudo .venv/bin/python server.py\n")
+        sys.exit(1)
 
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
