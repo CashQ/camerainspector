@@ -44,7 +44,7 @@ Browser  ◄── localhost ──►  Python Server  ◄── USB/PTP ──�
                             (Flask + gphoto2)
 ```
 
-The server needs `sudo` because macOS locks USB cameras behind a system daemon (`ptpcamerad`). The server kills it to claim the camera — this is safe and the daemon restarts when you unplug.
+**Why `sudo`?** macOS runs a daemon called `ptpcamerad` that auto-claims all USB cameras. The server needs root to kill it and talk to the camera directly. This is safe — the daemon restarts automatically when you unplug the camera.
 
 ## API
 
